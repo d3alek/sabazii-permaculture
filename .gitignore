@@ -1,0 +1,18 @@
+# Large binary files
+*.bin
+*.lcc
+*.lci
+*.lcp
+*.ply
+
+# Intermediate outputs
+output_lod6.*
+
+# QGIS temporary files
+*.qgz~
+*.qgs~
+.qgis2/
+
+# OS files
+.DS_Store
+Thumbs.db
