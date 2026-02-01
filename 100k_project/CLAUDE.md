@@ -3,40 +3,36 @@
 ## Tools Developed
 
 ### 1. `optimize_gabion_placement.py`
-Finds optimal gabion locations along contour lines.
+Finds optimal gabion locations along contour lines using **contour-based fill zones**.
 
 **Key features:**
 - Extracts contours from DEM at 1m intervals
 - Evaluates segments of specified length (default 100m)
-- **Upslope-only buffers** - only counts fill area on the uphill side of gabion
+- **Contour-based fill zones** - bounded by gabion line and uphill contour at target elevation
 - **Overlap prevention** - tracks claimed pixels, rejects >10% overlap
 - **Spacing filters:**
-  - Line-to-line distance (not just centroids)
-  - Minimum elevation difference (10m) to prevent adjacent contour selection
-  - Same contour allowed if 50m+ apart
+  - Minimum elevation difference (5m) between gabions on different contours
+  - Same contour allowed if 50m+ apart (--min-spacing)
+- **Exports fill zone polygons** with full stats as attributes
 
 **Usage:**
 ```bash
-python optimize_gabion_placement.py --height 1.0 --top 5 --min-spacing 50 --export
+python optimize_gabion_placement.py --height 1.0 --top 10 --min-spacing 50 --export
+python optimize_gabion_placement.py --height 0.5 1.0 1.5 2.0 2.5 3.0 --metric flat_area --top 15 --export
 ```
+
+**Output:** GeoPackage with two layers:
+- `gabions` - gabion line geometries
+- `fill_zones` - terrace polygons with attributes:
+  - `flat_area_m2`, `fill_vol_m3`, `rock_vol_m3`
+  - `fill_cost`, `rock_cost`, `mesh_cost`, `total_cost`
+  - `cost_per_m2`, `fill_effic`
 
 ### 2. `optimize_locations_then_height.py`
 Two-stage optimization: find locations first, then optimize height per location.
 
-**Usage:**
-```bash
-python optimize_locations_then_height.py --budget 100000 --metric flat_area --export
-```
-
-**Metrics:**
-- `fill_efficiency` - m² per m³ fill (favors short walls, minimal fill)
-- `flat_area` - absolute area created (favors tall walls)
-- `material_efficiency` - m² per m³ total material
-
 ### 3. `build_100k_project.py`
 Combines gabions from multiple height optimizations into a single project within budget.
-
-**Has cross-height filtering** to prevent gabions at adjacent elevations (e.g., 0.5m wall at 1087m blocking 1.0m wall at 1088m).
 
 ### 4. `build_combined_dem.py`
 Creates combined DEM and slope raster showing terrain after ALL gabions are built.
@@ -46,128 +42,73 @@ Calculates fill volumes for user-drawn gabion placements (original tool, uses te
 
 ---
 
-## What Works
+## Algorithm: Contour-Based Fill Zones
 
-1. **Contour extraction** from DEM using matplotlib - reliable
-2. **Segment extraction** along contours with overlap (step = length/4)
-3. **Line-to-line distance** for spacing - better than centroid distance
-4. **Elevation difference filter** (10m minimum) - prevents adjacent contour selection
-5. **Upslope buffer detection** - compares average elevation on left vs right side of line
-6. **Greedy selection** with pixel-level overlap tracking
-7. **Cost estimation**: fill (25 лв/m³), rock (30 лв/m³), mesh (15 лв/m²)
+The fill zone for each gabion is calculated as follows:
 
----
+1. **Gabion line** at base elevation (e.g., 1094m)
+2. **Target contour** at base + wall_height (e.g., 1095.5m for 1.5m wall)
+3. **Lateral edges** connect gabion endpoints to closest points on target contour
+4. **Fill polygon** = gabion line + target contour segment + lateral edges
 
-## What Doesn't Work / Limitations
-
-### 1. "Flat Area" Metric is Misleading
-The optimizer reports "flat_area" as pixels where fill occurs. But this does NOT equal actual 0-8° slope land created.
-
-**Example from 100k project:**
-- Optimizer reported: 888 m² flat area
-- Actual 0-8° slope gain: **236 m²** (only 27% of reported)
-
-**Why:** Edge effects. Each gabion creates artificial "cliffs" at the wall that show as >25° in slope calculations. Narrow terraces have proportionally more edge than center.
-
-### 2. Upslope Buffer is Geometric, Not Hydrological
-Current approach: `line.buffer(height * 5)` then filter to upslope side by elevation.
-
-**Problem:** Real fill would follow watershed boundaries, not circular buffers. Some "upslope" area may be across a ridge and wouldn't actually fill.
-
-**Proper solution:** Use flow direction analysis (D8 algorithm) to find true catchment area.
-
-### 3. Short Walls Create Almost No Usable Area
-0.5m walls with upslope-only buffer create 8-28 m² per 100m gabion. Not cost-effective.
-
-**Best results:** 1.5m walls create 260-340 m² per gabion.
-
-### 4. Limited Locations with Proper Spacing
-With 10m elevation difference + 50m line spacing, only **3 locations** found in the study area (1070-1110m range).
+This replaces the old geometric buffer approach (`line.buffer(height * 5)`) which:
+- Didn't follow actual terrain
+- Could include area across ridges that wouldn't fill
+- Over/underestimated terrace sizes
 
 ---
 
-## Key Questions Answered
+## Current Best Results (100k лв Budget)
 
-### Q: Where are the best spots for gabion dams?
-**A:** Use `optimize_gabion_placement.py` with `--metric flat_area` and `--min-spacing 50`. The tool finds contour segments that maximize flat area creation. In the Sabazii site, best locations are at 1077m, 1088m, and 1102m elevations.
+### Cost per m² by Wall Height
 
-### Q: What wall height is optimal?
-**A:** Depends on metric:
-- **fill_efficiency**: shorter walls (0.5m) - minimal material but tiny areas
-- **flat_area**: taller walls (1.5m) - more absolute area, better cost/m²
+| Height | Gabions | Total Area | Total Cost | Cost/m² | Fits 100k? |
+|--------|---------|------------|------------|---------|------------|
+| 0.5m   | 8       | 812 m²     | 27,459 лв  | 34 лв   | ✓ (72k spare) |
+| **1.0m** | **8** | **2,336 m²** | **64,951 лв** | **28 лв** | **✓ (35k spare)** |
+| 1.5m   | 9       | 4,148 m²   | 131,930 лв | 32 лв   | ✗ (32k over) |
+| 2.0m   | 9       | 5,716 m²   | 207,283 лв | 36 лв   | ✗ |
+| 2.5m   | 9       | 6,972 m²   | 290,049 лв | 42 лв   | ✗ |
+| 3.0m   | 10      | 9,152 m²   | 441,760 лв | 48 лв   | ✗ |
+| 3.5m   | 10      | 10,836 m²  | 586,687 лв | 54 лв   | ✗ |
+| 4.0m   | 9       | 10,868 m²  | 665,724 лв | 61 лв   | ✗ |
+| 4.5m   | 10      | 13,508 m²  | 899,296 лв | 67 лв   | ✗ |
+| 5.0m   | 10      | 14,860 m²  | 1,091,495 лв | 73 лв | ✗ |
 
-For maximizing usable land, **1.5m walls** at 37 лв/m² beat 0.5m walls at 100+ лв/m².
+### Best Single Gabion per Height
 
-### Q: How much flat land can 100k лв create?
-**A:** With honest accounting (upslope-only, no overlap):
-- **Optimizer estimate:** 888 m² (3 gabions × 1.5m height)
-- **Actual slope improvement:** ~236 m² of new 0-8° land
-- **Cost:** 32,505 лв spent, 67,495 лв reserve
-- **Real cost:** ~138 лв/m² of actual optimal-slope land
+| Height | Elevation | Flat Area | Fill m³ | Cost | Cost/m² |
+|--------|-----------|-----------|---------|------|---------|
+| 0.5m   | 1095m     | 220 m²    | 33      | 3,834 лв | 17 лв |
+| 1.0m   | 1095m     | 440 m²    | 198     | 10,207 лв | 23 лв |
+| 1.5m   | 1094m     | 680 m²    | 393     | 17,335 лв | 25 лв |
+| 2.0m   | 1098m     | 908 m²    | 819     | 30,218 лв | 33 лв |
+| 2.5m   | 1097m     | 1,160 m²  | 1,246   | 43,146 лв | 37 лв |
+| 3.0m   | 1097m     | 1,400 m²  | 1,884   | 61,349 лв | 44 лв |
+| 3.5m   | 1097m     | 1,576 m²  | 2,630   | 82,259 лв | 52 лв |
+| 4.0m   | 1096m     | 1,756 m²  | 2,934   | 92,095 лв | 52 лв |
+| 4.5m   | 1096m     | 1,936 m²  | 3,860   | 117,493 лв | 61 лв |
+| 5.0m   | 1095m     | 2,184 m²  | 5,064   | 149,847 лв | 69 лв |
 
-### Q: Why do gabions overlap in QGIS?
-**A:** Three issues fixed:
-1. Centroid distance vs line distance - **fixed**: now uses `line.distance()`
-2. Adjacent contours (1m apart) are geographically close - **fixed**: 10m elevation difference minimum
-3. Cross-height conflicts (0.5m at 1087m vs 1.0m at 1088m) - **fixed** in `build_100k_project.py`
+### Recommendation for 100k лв
 
-### Q: Is gabion terracing cost-effective for flat land creation?
-**A:** **No, not purely for cultivation area.** At 138+ лв/m², it's far more expensive than buying agricultural land (1-5 лв/m²).
-
-**But gabions provide other value:**
-- Water retention and infiltration
-- Erosion control
-- Long-term soil building
-- Microclimate modification
-
----
-
-## Current Best Results
-
-**3 gabions at 1.5m height:**
-| Location | Flat Area | Cost |
-|----------|-----------|------|
-| 1088m | 340 m² | 11,541 лв |
-| 1102m | 288 m² | 10,076 лв |
-| 1077m | 260 m² | 10,888 лв |
-| **TOTAL** | **888 m²** (reported) / **236 m²** (actual slope gain) | **32,505 лв** |
+**1.0m walls**: 8 gabions, **2,336 m²** total area, 64,951 лв (35k лв spare)
 
 ---
 
-## Files in 100k_project/
+## Configuration
 
-```
-Scripts:
-- optimize_gabion_placement.py      # Main optimizer
-- optimize_locations_then_height.py # Two-stage optimizer
-- build_100k_project.py             # Combine heights within budget
-- build_combined_dem.py             # Generate combined DEM/slope
-- calculate_fill_volume.py          # Volume calculator for drawn gabions
+### Spacing Parameters (in `optimize_gabion_placement.py`)
 
-Output (current best):
-- optimal_project_flat_area.gpkg    # 3 gabions, 1.5m height
-- combined_slope_optimal.tif        # Slope after construction
-- combined_dem_optimal.tif          # DEM after construction
-
-Old outputs (may be stale):
-- optimal_gabions_*.gpkg            # Single-height optimizations
-- project_100k_gabions.gpkg         # Old combined project
+```python
+min_elev_diff = 5  # meters - minimum elevation between gabions on different contours
 ```
 
----
+Command line:
+- `--min-spacing 50` - minimum distance between gabions on same contour (meters)
+- `--top N` - number of gabions to return
 
-## Next Steps to Investigate
-
-1. **Longer walls** - Try 150m or 200m segments for more area per gabion
-2. **Different elevation ranges** - Search outside 1070-1110m
-3. **Reduced spacing** - Accept 30m spacing to fit more gabions
-4. **Alternative metrics** - Optimize for water retention, not just flat area
-5. **Hydrological analysis** - Use flow accumulation to find natural water collection points
-6. **Staged construction** - Build highest-value gabion first, measure results, then iterate
-
----
-
-## Cost Assumptions
+### Cost Assumptions
 
 | Material | Unit Cost | Notes |
 |----------|-----------|-------|
@@ -176,3 +117,57 @@ Old outputs (may be stale):
 | Gabion mesh | 15 лв/m² | Galvanized wire mesh |
 
 **Labor not included** - costs are materials only.
+
+---
+
+## Files in 100k_project/
+
+```
+Scripts:
+- optimize_gabion_placement.py      # Main optimizer (contour-based)
+- optimize_locations_then_height.py # Two-stage optimizer
+- build_100k_project.py             # Combine heights within budget
+- build_combined_dem.py             # Generate combined DEM/slope
+- calculate_fill_volume.py          # Volume calculator for drawn gabions
+
+Output (current):
+- optimal_gabions_0.5m_flat_area.gpkg  # Results for each height
+- optimal_gabions_1.0m_flat_area.gpkg  # with gabions + fill_zones layers
+- optimal_gabions_1.5m_flat_area.gpkg
+- ... up to 5.0m
+```
+
+---
+
+## Key Learnings
+
+### 1. Contour-Based Fill Zones are Essential
+Geometric buffers (`line.buffer(height * 5)`) don't follow terrain. The new approach:
+- Uses actual uphill contour as boundary
+- Connects gabion endpoints to closest points on target contour
+- Produces accurate terrace polygons for visualization
+
+### 2. Cost/m² Increases with Height
+- 0.5m walls: 17 лв/m² (most efficient)
+- 3.0m walls: 44 лв/m² (2.6x more expensive per m²)
+- But taller walls create more area per gabion
+
+### 3. Diminishing Returns Above 2.0m
+Fill volume grows faster than area for taller walls:
+- 1.0m: 198 m³ fill → 440 m² (2.2 efficiency)
+- 3.0m: 1,884 m³ fill → 1,400 m² (0.74 efficiency)
+
+### 4. Budget Determines Optimal Height
+- **Maximize area within budget**: Use shorter walls (0.5-1.0m)
+- **Maximize area per gabion**: Use taller walls (2.5-3.0m)
+- **100k лв budget**: 1.0m walls are optimal
+
+---
+
+## Next Steps to Investigate
+
+1. **Mixed heights** - Use 1.0m walls at best locations, 0.5m elsewhere
+2. **Longer walls** - Try 150m or 200m segments
+3. **Different elevation ranges** - Search outside 1070-1110m
+4. **Water retention metric** - Optimize for catchment, not just flat area
+5. **Staged construction** - Build highest-value gabion first, measure, iterate
