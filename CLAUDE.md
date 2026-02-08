@@ -26,12 +26,13 @@ This is **not a software project**. It is a permaculture design specification re
 
 ### Google Docs → Local / GitHub (automated)
 
-1. Export Google Doc as DOCX: `get_drive_file_download_url(file_id, export_format='docx')`
-2. Download with `curl`
-3. Convert with `pandoc -f docx -t gfm --wrap=none`
-4. Push to GitHub `content/final-design.md`
+**Always use the sync script** — never read the Google Doc via MCP (`get_doc_content`) for review or analysis. The MCP output loses formatting structure, while the pandoc-generated markdown preserves heading hierarchy, list nesting, and other structural cues that are essential for spotting formatting problems.
 
-Or run `./sync-gdoc.sh` which guides through the process.
+```bash
+bash sync-gdoc.sh   # downloads DOCX, converts to GFM markdown
+```
+
+Then read and analyze `final-design.md` locally.
 
 ### Local → Google Docs (manual, preserves comments)
 
@@ -74,9 +75,10 @@ A `google-workspace` MCP server is configured for reading/writing Google Docs, D
 
 ### When to use MCP tools
 
-- **Reading**: `get_doc_content` for quick text reads, `inspect_doc_structure(detailed=true)` for finding indices
-- **Small targeted edits**: `find_and_replace_doc` for precise text replacements (preserves comments on unchanged text)
+- **DO NOT use `get_doc_content` for reading/reviewing** — use `sync-gdoc.sh` + read `final-design.md` instead. The MCP plain-text output strips heading levels, list structure, and formatting, making it impossible to catch formatting issues.
+- **Small targeted edits only**: `find_and_replace_doc` for precise text replacements (preserves comments on unchanged text)
 - **DO NOT use for bulk content changes** — instruct the user to edit in the Google Docs UI instead
+- **`inspect_doc_structure(detailed=true)`** — only for finding insertion indices when programmatic edits are needed
 
 ### Auth
 
